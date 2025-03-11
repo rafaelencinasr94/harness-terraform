@@ -11,14 +11,6 @@ terraform {
 
 locals {
   key_name = "harness_terraform"
-  private_key_path = "/path/to/your/key/your-key.pem"
-  file_destination =  "/tmp/your-key.pem"
-  chmod_command = "chmod 400 '/tmp/your-key.pem'"
-}
-
-
-provider "aws" {
-  region = "us-west-1"
 }
 
 resource "aws_vpc" "main_vpc" {
@@ -30,6 +22,26 @@ resource "aws_vpc" "main_vpc" {
   }
 }
 
+resource "aws_subnet" "subnet-1" {
+  vpc_id = aws_vpc.main_vpc.id
+  cidr_block = cidrsubnet(aws_vpc.main_vpc.cidr_block, 8, 1)
+  map_public_ip_on_launch = true
+  availability_zone = "us-west-1b"
+    tags = {
+      Name = "subnet-1b"
+    }
+}
+
+resource "aws_subnet" "subnet-2" {
+  vpc_id = aws_vpc.main_vpc.id
+  cidr_block = cidrsubnet(aws_vpc.main_vpc.cidr_block, 8, 2)
+  map_public_ip_on_launch = true
+  availability_zone = "us-west-1c"
+    tags = {
+      Name = "subnet-1c"
+    }
+}
+
 resource "aws_internet_gateway" "harness-igw" {
   vpc_id = aws_vpc.main_vpc.id
 
@@ -37,17 +49,6 @@ resource "aws_internet_gateway" "harness-igw" {
     Name = "harness-igw"
   }
 }
-
-resource "aws_subnet" "harness-public-subnet-1b" {
-  vpc_id     = aws_vpc.main_vpc.id
-  cidr_block = "10.0.1.0/24"
-  availability_zone = "us-west-1b"
-
-  tags = {
-    Name = "harness-public-subnet-1b"
-  }
-}
-
 
 resource "aws_route_table" "harness-public-rt" {
   vpc_id = aws_vpc.main_vpc.id
@@ -62,74 +63,160 @@ resource "aws_route_table" "harness-public-rt" {
   }
 }
 
-resource "aws_route_table_association" "devops-associate-public-subnets-1b" {
-  subnet_id      = aws_subnet.harness-public-subnet-1b.id
+resource "aws_route_table_association" "subnet-1-route" {
+  subnet_id      = aws_subnet.subnet-1.id
   route_table_id = aws_route_table.harness-public-rt.id
 }
 
-resource "aws_security_group" "harness-public-subnet-sg" {
+resource "aws_route_table_association" "subnet-2-route" {
+  subnet_id      = aws_subnet.subnet-2.id
+  route_table_id = aws_route_table.harness-public-rt.id
+}
+
+resource "aws_security_group" "harness-subnet-sg" {
   name        = "harness-public-subnet-sg"
   description = "Allow SSH inboud traffic and all outbound traffic"
   vpc_id      = aws_vpc.main_vpc.id
 
+         ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    self        = "false"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "any"
+    }
+
+
+
+     ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    self        = "false"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "any"
+    }
+
+
+    egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    }
+
   tags = {
-    Name = "harness-public-subnet-sg"
+    Name = "harness-subnet-sg"
   }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "allow_ssh" {
-  security_group_id = aws_security_group.harness-public-subnet-sg.id
-  cidr_ipv4 = "0.0.0.0/0"
-  from_port = 22
-  ip_protocol = "tcp"
-  to_port = 22
-}
-
-resource "aws_vpc_security_group_egress_rule" "allow_all_traffic" {
-  security_group_id = aws_security_group.harness-public-subnet-sg.id
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "-1" # semantically equivalent to all ports
-}
-
-resource "aws_instance" "harness" {
-  ami           = "ami-08d4f6bbae664bd41"
-  instance_type = "t2.micro"
-  associate_public_ip_address = true
-  availability_zone = "us-west-1b"
+resource "aws_launch_template" "ecs_lt" {
+  name_prefix   = "ecs-template"
+  image_id           = "ami-08d4f6bbae664bd41"
   key_name = local.key_name
-  vpc_security_group_ids = [aws_security_group.harness-public-subnet-sg.id]
-  subnet_id = aws_subnet.harness-public-subnet-1b.id
+  instance_type = "t2.micro"
+  vpc_security_group_ids = [aws_security_group.harness-subnet-sg.id]
 
-    /*
-  provisioner "file" {
-    source = local.private_key_path
-    destination = local.file_destination
-
-    connection {
-      host = self.public_ip
-      private_key = file(local.private_key_path)
-      user = "ec2-user"
-      type = "ssh"
-      timeout = "2m"
-    }
+  iam_instance_profile {
+      name = "ecsInstanceRole"
+  }
+  block_device_mappings {
+      device_name = "/dev/xvda"
+      ebs {
+          volume_size = 30
+          volume_type = "gp2"
+      }
   }
 
-  provisioner "remote-exec" {
-    inline = [ 
-      "echo 'Configuring key pair'",
-      local.chmod_command
-     ]
-    connection {
-      host = self.public_ip
-      private_key = file(local.private_key_path)
-      user = "ec2-user"
-      type = "ssh"
-      timeout = "2m"
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "ecs-instance"
     }
   }
-  */
+  user_data = filebase64("${path.module}/ecs.sh")
+}
+
+resource "aws_autoscaling_group" "ecs_asg" {
+  vpc_zone_identifier = [aws_subnet.subnet-1.id, aws_subnet.subnet-2.id]
+  desired_capacity = 1
+  max_size = 2
+  min_size = 1
+
+  launch_template {
+    id = aws_launch_template.ecs_lt.id
+    version = "$Latest"
+  }
+
+  tag {
+    key = "AmazonECSManaged"
+    value = true
+    propagate_at_launch = true
+  }
+}
+
+resource "aws_lb" "ecs_alb" {
+  name = "ecs-alb"
+  internal = false
+  load_balancer_type = "application"
+  security_groups = [aws_security_group.harness-subnet-sg.id]
+  subnets = [ aws_subnet.subnet-1.id, aws_subnet.subnet-2.id ]
 
   tags = {
-    Name = "harness_instance"
+    Name = "ecs-alb"
+  }
+}
+
+resource "aws_lb_target_group" "ecs_tg" {
+  name = "ecs-target-group"
+  port = 8080
+  protocol = "HTTP"
+  target_type = "ip"
+  vpc_id = aws_vpc.main_vpc.id
+
+  health_check {
+    path = "/"
+  }
+}
+
+resource "aws_lb_listener" "ecs_alb_listener" {
+  load_balancer_arn = aws_lb.ecs_alb.arn
+  port = 8080
+  protocol = "HTTP"
+
+  default_action {
+    type = "forward"
+    target_group_arn = aws_lb_target_group.ecs_tg.id
+  }
+}
+
+resource "aws_ecs_cluster" "ecs_cluster" {
+  name = "my-ecs-cluster"
+}
+
+resource "aws_ecs_capacity_provider" "ecs_capacity_provider" {
+  name = "test1"
+
+  auto_scaling_group_provider {
+    auto_scaling_group_arn = aws_autoscaling_group.ecs_asg.arn
+    managed_scaling {
+        maximum_scaling_step_size = 1000
+        minimum_scaling_step_size = 1
+        status = "ENABLED"
+        target_capacity = 3
+    }
+  }
+}
+
+resource "aws_ecs_cluster_capacity_providers" "example" {
+  cluster_name = aws_ecs_cluster.ecs_cluster.name
+
+  capacity_providers = [aws_ecs_capacity_provider.ecs_capacity_provider.name]
+
+  default_capacity_provider_strategy {
+    base = 1
+    weight = 100
+    capacity_provider = aws_ecs_capacity_provider.ecs_capacity_provider.name
   }
 }
