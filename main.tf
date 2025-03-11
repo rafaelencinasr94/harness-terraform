@@ -13,6 +13,10 @@ locals {
   key_name = "harness_terraform"
 }
 
+provider "aws" {
+  region = "us-west-1"
+}
+
 resource "aws_vpc" "main_vpc" {
   cidr_block       = "10.0.0.0/16"
   instance_tenancy = "default"
