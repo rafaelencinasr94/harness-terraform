@@ -36,6 +36,10 @@ resource "aws_subnet" "subnet-1" {
     }
 }
 
+output "ecs_subnet_id" {
+  value = aws_subnet.subnet-1.id
+}
+
 resource "aws_subnet" "subnet-2" {
   vpc_id = aws_vpc.main_vpc.id
   cidr_block = cidrsubnet(aws_vpc.main_vpc.cidr_block, 8, 2)
@@ -113,6 +117,10 @@ resource "aws_security_group" "harness-subnet-sg" {
   tags = {
     Name = "harness-subnet-sg"
   }
+}
+
+output "ecs_sg_id" {
+  value = aws_security_group.harness-subnet-sg.id
 }
 
 resource "aws_launch_template" "ecs_lt" {
@@ -197,6 +205,11 @@ resource "aws_lb_listener" "ecs_alb_listener" {
 resource "aws_ecs_cluster" "ecs_cluster" {
   name = "my-ecs-cluster"
 }
+
+output "ecs_cluster_name" {
+  value = aws_ecs_cluster.ecs_cluster.name
+}
+
 
 resource "aws_ecs_capacity_provider" "ecs_capacity_provider" {
   name = "test1"
